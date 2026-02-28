@@ -1,0 +1,15 @@
+services:
+  marriott-checker:
+    build: .
+    container_name: marriott-checker
+    restart: unless-stopped
+    ports:
+      - "30069:8080"
+    volumes:
+      # Config is saved here — persists across container restarts and rebuilds.
+      # Change the left side to any path on your TrueNAS server, e.g.:
+      #   /mnt/tank/apps/marriott-checker/data:/data
+      - marriott_data:/data
+
+volumes:
+  marriott_data:
