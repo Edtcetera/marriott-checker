@@ -23,6 +23,17 @@ def run_checks():
     results = []
     try:
         for config in get_hotels():
+            co_date = datetime.strptime(config["check_out"], "%Y-%m-%d").date()
+            if co_date < datetime.now().date():
+                results.append({
+                    "name":          config.get("name", config["property_code"].upper()),
+                    "property_code": config["property_code"].upper(),
+                    "check_in":      config["check_in"],
+                    "check_out":     config["check_out"],
+                    "skipped":       True,
+                })
+                continue
+
             rooms      = fetch_all_prices(config)
             best       = find_best_match(rooms, config)
             original   = config["original_rate_per_night"]
@@ -310,6 +321,17 @@ DASHBOARD = """<!DOCTYPE html><html lang="en"><head>
 
   {% elif state.status=='done' and state.results %}
   {% for h in state.results %}
+  {% if h.skipped %}
+  <div class="hotel-card" id="hotel-{{ loop.index }}">
+    <div class="hotel-header" style="cursor:default;">
+      <div style="flex:1;min-width:0;">
+        <div class="hotel-title">{{ h.name }}</div>
+        <div class="hotel-meta">{{ h.property_code }} &nbsp;·&nbsp; {{ h.check_in }} → {{ h.check_out }}</div>
+      </div>
+      <span class="badge same">Past reservation — skipped</span>
+    </div>
+  </div>
+  {% else %}
   {% set has_cheaper = h.best_diff is not none and h.best_diff > 0 %}
   <div class="hotel-card {% if has_cheaper %}higher{% else %}drop{% endif %} collapsed" id="hotel-{{ loop.index }}">
     <div class="hotel-header" onclick="toggleCollapse('hotel-{{ loop.index }}')">
@@ -424,6 +446,7 @@ DASHBOARD = """<!DOCTYPE html><html lang="en"><head>
     {% endif %}
   </div><!-- hotel-collapsible -->
   </div><!-- hotel-card -->
+  {% endif %}
   {% endfor %}
 
   {% elif state.status=='idle' %}
@@ -652,12 +675,20 @@ SETTINGS = """<!DOCTYPE html><html lang="en"><head>
 <script>
 let hotels = {{ config.hotels | tojson }};
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
+function isPast(dateStr){
+  if(!dateStr) return false;
+  const today = new Date(); today.setHours(0,0,0,0);
+  return new Date(dateStr) < today;
+}
 function renderHotels(){
   document.getElementById('hotelList').innerHTML=hotels.map((h,i)=>`
   <div class="hotel-entry" id="hotel-${i}">
     <div class="hotel-entry-header">
       <span class="hotel-entry-title">Reservation ${i+1}</span>
-      <button class="remove-btn" onclick="removeHotel(${i})">✕ Remove</button>
+      <div style="display:flex;align-items:center;gap:8px;">
+        ${isPast(h.check_out)?'<span style="font-size:0.72rem;font-weight:700;padding:3px 10px;border-radius:20px;background:rgba(231,76,60,0.15);color:#e74c3c;">⚠️ Past reservation</span>':''}
+        <button class="remove-btn" onclick="removeHotel(${i})">✕ Remove</button>
+      </div>
     </div>
     <div class="form-row c2">
       <div><label>Reservation Name</label><input type="text" value="${esc(h.name)}" onchange="hotels[${i}].name=this.value" placeholder="e.g. Marriott Vancouver"></div>
