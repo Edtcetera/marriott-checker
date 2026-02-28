@@ -3,13 +3,15 @@
 
 import json
 import threading
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from flask import Flask, render_template_string, jsonify, request
 from checker import load_config, save_config, get_hotels, get_browser_cookies, fetch_all_prices, find_best_match
+from notify  import send_cheaper_rate_alert, send_summary
 
 app = Flask(__name__)
 
-state = {"status": "idle", "last_run": None, "results": [], "error": None}
+state = {"status": "idle", "last_run": None, "next_check": None, "results": [], "error": None}
 state_lock = threading.Lock()
 
 
@@ -96,10 +98,27 @@ def run_checks():
                 "rate_rows":      annotated,
             })
 
+        last_run     = datetime.now()
+        cfg          = load_config()
+        interval_hrs = float(cfg.get("schedule_hours", 3))
+        # next_check is based on when the check STARTED so the countdown
+        # reflects the actual scheduler interval regardless of check duration
+        next_check   = last_run + timedelta(hours=interval_hrs)
         with state_lock:
-            state["status"]   = "done"
-            state["last_run"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            state["results"]  = results
+            state["status"]         = "done"
+            state["last_run"]       = last_run.strftime("%Y-%m-%d %H:%M:%S")
+            state["last_run_epoch"] = int(last_run.timestamp() * 1000)
+            state["schedule_hours"] = interval_hrs
+            state["next_check"]     = next_check.strftime("%Y-%m-%d %H:%M:%S")
+            state["results"]        = results
+        last_run = last_run.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Send HA notifications
+        cfg = load_config()
+        for h in results:
+            if h.get("best_diff") is not None and h["best_diff"] > 0:
+                send_cheaper_rate_alert(cfg, h)
+        send_summary(cfg, results, last_run)
 
     except Exception as e:
         with state_lock:
@@ -137,6 +156,21 @@ def api_save_config():
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/api/notify/test", methods=["POST"])
+def notify_test():
+    from notify import _ha_notify
+    cfg     = load_config()
+    ha_url  = cfg.get("ha_url",     "").strip()
+    token   = cfg.get("ha_token",   "").strip()
+    service = cfg.get("ha_service", "notify").strip() or "notify"
+    if not ha_url or not token:
+        return jsonify({"ok": False, "error": "HA URL or token not configured"}), 400
+    ok = _ha_notify(ha_url, token, service,
+                    "🏨 Marriott Checker — Test",
+                    "Home Assistant notifications are working correctly!")
+    return jsonify({"ok": ok, "error": None if ok else "Check logs for details"})
 
 
 @app.route("/check", methods=["POST"])
@@ -242,8 +276,14 @@ DASHBOARD = """<!DOCTYPE html><html lang="en"><head>
 </style></head><body>
 <header>
   <h1>🏨 Marriott Price Checker</h1>
-  <div style="display:flex;align-items:center;gap:12px;">
-    {% if state.last_run %}<span style="font-size:0.78rem;color:var(--muted)">Last check: {{ state.last_run }}</span>{% endif %}
+  <div style="display:flex;align-items:center;gap:16px;">
+    {% if state.last_run %}<span style="font-size:0.78rem;color:var(--muted)">Last: {{ state.last_run }}</span>{% endif %}
+    {% if state.last_run_epoch and state.status != 'checking' %}
+    <span style="font-size:0.78rem;color:var(--muted)">Next: <span id="countdown"
+      data-last-run="{{ state.last_run_epoch }}"
+      data-interval-hours="{{ state.schedule_hours or 3 }}"
+      style="color:var(--accent);font-variant-numeric:tabular-nums;">—</span></span>
+    {% endif %}
     <div class="nav-links">
       <a href="/settings" class="btn">⚙️ Settings</a>
       <button class="btn primary" id="checkBtn" onclick="startCheck()"
@@ -491,6 +531,26 @@ function pollStatus(){
   }).catch(()=>setTimeout(pollStatus,3000));
 }
 {% if state.status=='checking' %}setTimeout(pollStatus,2000);{% endif %}
+
+// ── Countdown timer ───────────────────────────────────────────────────────
+(function(){
+  const el = document.getElementById('countdown');
+  if(!el) return;
+  // Use epoch ms + interval so browser timezone never causes drift
+  const lastRun    = parseInt(el.dataset.lastRun, 10);
+  const intervalMs = parseFloat(el.dataset.intervalHours) * 3600000;
+  const target     = lastRun + intervalMs;
+  function tick(){
+    const diff = Math.max(0, target - Date.now());
+    if(diff === 0){ el.textContent = 'now'; setTimeout(()=>window.location.reload(), 3000); return; }
+    const h = Math.floor(diff / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    const s = Math.floor((diff % 60000) / 1000);
+    el.textContent = (h ? h+'h ' : '') + String(m).padStart(2,'0')+'m ' + String(s).padStart(2,'0')+'s';
+    setTimeout(tick, 1000);
+  }
+  tick();
+})();
 </script></body></html>
 """
 
@@ -537,6 +597,53 @@ SETTINGS = """<!DOCTYPE html><html lang="en"><head>
         2. Open DevTools (F12) → <strong>Network</strong> tab → reload the page<br>
         3. Click any request to marriott.com → <strong>Headers</strong> → find <code>Cookie:</code> and copy the full value<br>
         4. Paste above and save. <em>Cookies expire every few days — refresh them if Member/AAA rates stop appearing.</em>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header"><h2>⏱️ Schedule</h2></div>
+    <div class="card-body">
+      <p style="font-size:0.83rem;color:var(--muted);margin-bottom:18px;">How often the price checker runs automatically in the background.</p>
+      <div class="form-row" style="max-width:280px;">
+        <div><label>Check interval (hours)</label>
+          <input type="number" id="scheduleHours" min="0.5" max="168" step="0.5"
+            value="{{ config.schedule_hours or 3 }}" placeholder="e.g. 3">
+        </div>
+      </div>
+      <p style="font-size:0.78rem;color:var(--muted);margin-top:8px;">Minimum 0.5h (30 min). Changes take effect after the current interval completes.</p>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header"><h2>🔔 Home Assistant Notifications</h2></div>
+    <div class="card-body">
+      <p style="font-size:0.83rem;color:var(--muted);margin-bottom:18px;">
+        Receive push notifications on your phone via Home Assistant when a cheaper rate is found, and a summary after every check.
+      </p>
+      <div class="form-row c2" style="margin-bottom:12px;">
+        <div>
+          <label>Home Assistant URL</label>
+          <input type="text" id="haUrl" value="{{ config.ha_url or '' }}" placeholder="e.g. http://homeassistant.local:8123">
+        </div>
+        <div>
+          <label>Notify Service Name</label>
+          <input type="text" id="haService" value="{{ config.ha_service or 'notify' }}" placeholder="e.g. notify or mobile_app_your_phone">
+        </div>
+      </div>
+      <div class="form-row" style="margin-bottom:12px;">
+        <div>
+          <label>Long-lived Access Token</label>
+          <input type="password" id="haToken" value="{{ config.ha_token or '' }}" placeholder="Paste your HA long-lived access token here">
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <button class="btn" onclick="testNotify()" id="testBtn">📲 Send Test Notification</button>
+        <span id="testResult" style="font-size:0.82rem;"></span>
+      </div>
+      <div class="cookie-hint" style="margin-top:14px;">
+        <strong>How to set up:</strong><br>
+        1. In Home Assistant go to <strong>Profile → Security → Long-lived access tokens → Create token</strong><br>
+        2. For the service name, go to <strong>Developer Tools → Services</strong> and search <code>notify</code> — use the part after <code>notify.</code> (e.g. <code>mobile_app_your_phone</code>), or just use <code>notify</code> to send to all devices<br>
+        3. Paste the URL, service name, and token above, save, then hit Send Test Notification to confirm it works
       </div>
     </div>
   </div>
@@ -590,9 +697,13 @@ function addHotel(){
 }
 function removeHotel(i){hotels.splice(i,1);renderHotels();}
 function saveAll(){
-  const cookies=document.getElementById('cookieInput').value.trim();
+  const cookies       = document.getElementById('cookieInput').value.trim();
+  const haUrl         = document.getElementById('haUrl').value.trim();
+  const haToken       = document.getElementById('haToken').value.trim();
+  const haService     = document.getElementById('haService').value.trim();
+  const scheduleHours = parseFloat(document.getElementById('scheduleHours').value) || 3;
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({hotels,browser_cookies:cookies})
+    body:JSON.stringify({hotels, browser_cookies:cookies, ha_url:haUrl, ha_token:haToken, ha_service:haService, schedule_hours:scheduleHours})
   }).then(r=>r.json()).then(d=>{
     const t=document.getElementById('toast');
     t.className='toast show '+(d.ok?'success':'error');
@@ -600,9 +711,45 @@ function saveAll(){
     setTimeout(()=>t.className='toast',3500);
   });
 }
+function testNotify(){
+  const btn=document.getElementById('testBtn');
+  const res=document.getElementById('testResult');
+  btn.disabled=true; res.textContent='Sending…'; res.style.color='var(--muted)';
+  // Save first so the test uses current values
+  const cookies = document.getElementById('cookieInput').value.trim();
+  const haUrl   = document.getElementById('haUrl').value.trim();
+  const haToken = document.getElementById('haToken').value.trim();
+  const haService = document.getElementById('haService').value.trim();
+  const scheduleHours = parseFloat(document.getElementById('scheduleHours').value) || 3;
+  fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({hotels, browser_cookies:cookies, ha_url:haUrl, ha_token:haToken, ha_service:haService, schedule_hours:scheduleHours})
+  }).then(()=>fetch('/api/notify/test',{method:'POST'}))
+    .then(r=>r.json()).then(d=>{
+      btn.disabled=false;
+      if(d.ok){ res.textContent='✅ Notification sent!'; res.style.color='var(--green)'; }
+      else     { res.textContent='❌ '+d.error;           res.style.color='var(--red)';   }
+    }).catch(()=>{ btn.disabled=false; res.textContent='❌ Request failed'; res.style.color='var(--red)'; });
+}
 renderHotels();
 </script></body></html>
 """
 
+def scheduler():
+    """Background thread: run checks on the configured interval (default 3h)."""
+    # Wait for Flask to fully start before first run
+    time.sleep(5)
+    while True:
+        if get_hotels():
+            with state_lock:
+                already_running = state["status"] == "checking"
+            if not already_running:
+                threading.Thread(target=run_checks, daemon=True).start()
+        # Re-read interval each cycle so changes take effect without restart
+        interval_hrs = float(load_config().get("schedule_hours", 3))
+        for _ in range(int(interval_hrs * 3600)):
+            time.sleep(1)
+
+
 if __name__ == "__main__":
+    threading.Thread(target=scheduler, daemon=True).start()
     app.run(host="0.0.0.0", port=8080, debug=False)

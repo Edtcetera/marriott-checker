@@ -15,7 +15,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium
 
-COPY app.py checker.py ./
+COPY app.py checker.py notify.py ./
 
 EXPOSE 8080
 
