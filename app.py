@@ -36,78 +36,128 @@ def run_checks():
 
             rooms      = fetch_all_prices(config)
             best       = find_best_match(rooms, config)
-            original   = config["original_rate_per_night"]
+            stay_type  = config.get("stay_type", "cash")
             ci         = datetime.strptime(config["check_in"],  "%Y-%m-%d")
             co         = datetime.strptime(config["check_out"], "%Y-%m-%d")
             num_nights = (co - ci).days
 
-            best_diff  = (original - best["price_per_night"]) if best else None
-            best_pct   = ((best_diff / original) * 100)       if best_diff is not None else None
-            best_total = (best_diff * num_nights)              if best_diff is not None else None
+            if stay_type == "award":
+                original   = config.get("original_points_per_night") or 0
+                best_pts   = best["points_per_night"] if best else None
+                best_diff  = (original - best_pts) if best_pts is not None else None
+                best_pct   = ((best_diff / original) * 100) if (best_diff is not None and original) else None
+                best_total = (best_diff * num_nights)        if best_diff is not None else None
 
-            # Find cheapest rate in the OTHER cancellation categories
-            cancel_type = config.get("cancellation_type", "any")
-            other_bests = []
-            other_cats  = []
-            if cancel_type == "refundable":
-                other_cats = [("nonrefundable", "Non-refundable")]
-            elif cancel_type == "nonrefundable":
-                other_cats = [("refundable", "Refundable")]
-            elif cancel_type == "any":
-                other_cats = [("refundable", "Refundable"), ("nonrefundable", "Non-refundable")]
+                # Build sorted rate rows — deduplicate by (rate_name, room_type_code), keep cheapest pts
+                seen = {}
+                for r in rooms:
+                    if r.get("points_per_night") is None:
+                        continue
+                    key = (r["rate_name"], r["room_type_code"])
+                    if key not in seen or r["points_per_night"] < seen[key]["points_per_night"]:
+                        seen[key] = r
+                rate_rows = sorted(seen.values(), key=lambda r: r["points_per_night"])
 
-            for cat_key, cat_label in other_cats:
-                alt_config = {**config, "cancellation_type": cat_key}
-                alt_best   = find_best_match(rooms, alt_config)
-                if alt_best:
-                    alt_diff  = original - alt_best["price_per_night"]
-                    alt_pct   = (alt_diff / original * 100) if original else 0
-                    alt_total = alt_diff * num_nights
-                    other_bests.append({
-                        "label":      cat_label,
-                        "price":      alt_best["price_per_night"],
-                        "rate_name":  alt_best["rate_name"],
-                        "diff":       alt_diff,
-                        "pct":        alt_pct,
-                        "total":      alt_total,
-                    })
+                annotated = []
+                for r in rate_rows:
+                    diff = original - r["points_per_night"]
+                    pct  = (diff / original * 100) if original else 0
+                    annotated.append({**r, "diff": diff, "pct": pct})
 
-            # Build sorted rate rows — deduplicate by (rate_name, room_type_code), keep cheapest
-            seen   = {}
-            for r in rooms:
-                key = (r["rate_name"], r["room_type_code"])
-                if key not in seen or r["price_per_night"] < seen[key]["price_per_night"]:
-                    seen[key] = r
-            rate_rows = sorted(seen.values(), key=lambda r: r["price_per_night"])
+                results.append({
+                    "name":          config.get("name", config["property_code"].upper()),
+                    "property_code": config["property_code"].upper(),
+                    "check_in":      config["check_in"],
+                    "check_out":     config["check_out"],
+                    "num_nights":    num_nights,
+                    "adults":        config["adults"],
+                    "stay_type":     "award",
+                    "original":      original,
+                    "currency":      "",
+                    "best_pts":      best_pts,
+                    "best_price":    None,
+                    "best_name":     best["rate_name"] if best else None,
+                    "best_diff":     best_diff,
+                    "best_pct":      best_pct,
+                    "best_total":    best_total,
+                    "other_bests":   [],
+                    "rate_rows":     annotated,
+                })
 
-            # Annotate each row with savings vs original
-            annotated = []
-            for r in rate_rows:
-                diff = original - r["price_per_night"]
-                pct  = (diff / original * 100) if original else 0
-                annotated.append({**r, "diff": diff, "pct": pct})
+            else:  # cash
+                original   = config["original_rate_per_night"]
+                best_diff  = (original - best["price_per_night"]) if best else None
+                best_pct   = ((best_diff / original) * 100)       if best_diff is not None else None
+                best_total = (best_diff * num_nights)              if best_diff is not None else None
 
-            currency      = config.get("currency", "CAD")
-            cancel_labels = {"any": "Any", "refundable": "Refundable only", "nonrefundable": "Non-refundable only"}
-            results.append({
-                "name":           config.get("name", config["property_code"].upper()),
-                "property_code":  config["property_code"].upper(),
-                "check_in":       config["check_in"],
-                "check_out":      config["check_out"],
-                "num_nights":     num_nights,
-                "adults":         config["adults"],
-                "original":       original,
-                "currency":       currency,
-                "cancel_type":    cancel_type,
-                "cancel_label":   cancel_labels.get(cancel_type, "Any"),
-                "best_price":     best["price_per_night"] if best else None,
-                "best_name":      best["rate_name"]       if best else None,
-                "best_diff":      best_diff,
-                "best_pct":       best_pct,
-                "best_total":     best_total,
-                "other_bests":    other_bests,
-                "rate_rows":      annotated,
-            })
+                # Find cheapest rate in the OTHER cancellation categories
+                cancel_type = config.get("cancellation_type", "any")
+                other_bests = []
+                other_cats  = []
+                if cancel_type == "refundable":
+                    other_cats = [("nonrefundable", "Non-refundable")]
+                elif cancel_type == "nonrefundable":
+                    other_cats = [("refundable", "Refundable")]
+                elif cancel_type == "any":
+                    other_cats = [("refundable", "Refundable"), ("nonrefundable", "Non-refundable")]
+
+                for cat_key, cat_label in other_cats:
+                    alt_config = {**config, "cancellation_type": cat_key}
+                    alt_best   = find_best_match(rooms, alt_config)
+                    if alt_best:
+                        alt_diff  = original - alt_best["price_per_night"]
+                        alt_pct   = (alt_diff / original * 100) if original else 0
+                        alt_total = alt_diff * num_nights
+                        other_bests.append({
+                            "label":      cat_label,
+                            "price":      alt_best["price_per_night"],
+                            "rate_name":  alt_best["rate_name"],
+                            "diff":       alt_diff,
+                            "pct":        alt_pct,
+                            "total":      alt_total,
+                        })
+
+                # Build sorted rate rows — deduplicate by (rate_name, room_type_code), keep cheapest
+                seen = {}
+                for r in rooms:
+                    if r.get("price_per_night") is None:
+                        continue
+                    key = (r["rate_name"], r["room_type_code"])
+                    if key not in seen or r["price_per_night"] < seen[key]["price_per_night"]:
+                        seen[key] = r
+                rate_rows = sorted(seen.values(), key=lambda r: r["price_per_night"])
+
+                annotated = []
+                for r in rate_rows:
+                    diff = original - r["price_per_night"]
+                    pct  = (diff / original * 100) if original else 0
+                    annotated.append({**r, "diff": diff, "pct": pct})
+
+                has_points_data = any(r.get("points_per_night") for r in annotated)
+                currency        = config.get("currency", "CAD")
+                cancel_labels   = {"any": "Any", "refundable": "Refundable only", "nonrefundable": "Non-refundable only"}
+                results.append({
+                    "name":            config.get("name", config["property_code"].upper()),
+                    "property_code":   config["property_code"].upper(),
+                    "check_in":        config["check_in"],
+                    "check_out":       config["check_out"],
+                    "num_nights":      num_nights,
+                    "adults":          config["adults"],
+                    "stay_type":       "cash",
+                    "original":        original,
+                    "currency":        currency,
+                    "cancel_type":     cancel_type,
+                    "cancel_label":    cancel_labels.get(cancel_type, "Any"),
+                    "best_price":      best["price_per_night"] if best else None,
+                    "best_pts":        None,
+                    "best_name":       best["rate_name"]       if best else None,
+                    "best_diff":       best_diff,
+                    "best_pct":        best_pct,
+                    "best_total":      best_total,
+                    "other_bests":     other_bests,
+                    "rate_rows":       annotated,
+                    "has_points_data": has_points_data,
+                })
 
         last_run     = datetime.now()
         cfg          = load_config()
@@ -162,7 +212,11 @@ def api_save_config():
         for h in data.get("hotels", []):
             datetime.strptime(h["check_in"],  "%Y-%m-%d")
             datetime.strptime(h["check_out"], "%Y-%m-%d")
-            assert float(h["original_rate_per_night"]) > 0
+            stay_type = h.get("stay_type", "cash")
+            if stay_type == "award":
+                assert int(h.get("original_points_per_night") or 0) > 0
+            else:
+                assert float(h.get("original_rate_per_night") or 0) > 0
         save_config(data)
         return jsonify({"ok": True})
     except Exception as e:
@@ -225,6 +279,8 @@ label{font-size:0.78rem;color:var(--muted);display:block;margin-bottom:5px;}
 .card-body{padding:20px;}
 .toast{position:fixed;bottom:24px;right:24px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 18px;font-size:0.875rem;box-shadow:0 4px 20px rgba(0,0,0,0.4);z-index:100;display:none;align-items:center;gap:10px;}
 .toast.show{display:flex;}.toast.success{border-color:var(--green);}.toast.error{border-color:var(--red);}
+.badge.award{background:rgba(93,173,226,0.15);color:#5dade2;}
+.tag.points{background:rgba(93,173,226,0.12);color:#5dade2;}
 """
 
 DASHBOARD = """<!DOCTYPE html><html lang="en"><head>
@@ -366,28 +422,43 @@ DASHBOARD = """<!DOCTYPE html><html lang="en"><head>
       </div>
       <div class="hotel-header-right" style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:flex-end;">
-      {% if h.best_price is none %}<span class="badge same">No Data</span>
-      {% elif has_cheaper %}<span class="badge higher">↓ {{ "%.1f"|format(h.best_pct) }}% cheaper {{ h.cancel_label | lower }} — rebook</span>
-      {% else %}<span class="badge drop">✓ Best {{ h.cancel_label | lower }} rate</span>{% endif %}
-      {% for ob in h.other_bests %}
-        {% if ob.diff > 0 %}
-          <span class="badge alt-cheaper" title="{{ ob.rate_name }}">{{ ob.label }}: ↓ {{ "%.1f"|format(ob.pct) }}% · saves {{ h.currency }} ${{ "%.0f"|format(ob.total) }} trip</span>
-        {% elif ob.diff <= 0 %}
-          <span class="badge alt-higher" title="{{ ob.rate_name }}">{{ ob.label }}: ↑ {{ "%.1f"|format(-ob.pct) }}% pricier</span>
-        {% endif %}
-      {% endfor %}
+      {% if h.stay_type == 'award' %}
+        {% if h.best_pts is none %}<span class="badge same">No Data</span>
+        {% elif has_cheaper %}<span class="badge award">↓ {{ "%.1f"|format(h.best_pct) }}% fewer pts — rebook</span>
+        {% else %}<span class="badge drop">✓ Best pts rate</span>{% endif %}
+      {% else %}
+        {% if h.best_price is none %}<span class="badge same">No Data</span>
+        {% elif has_cheaper %}<span class="badge higher">↓ {{ "%.1f"|format(h.best_pct) }}% cheaper {{ h.cancel_label | lower }} — rebook</span>
+        {% else %}<span class="badge drop">✓ Best {{ h.cancel_label | lower }} rate</span>{% endif %}
+        {% for ob in h.other_bests %}
+          {% if ob.diff > 0 %}
+            <span class="badge alt-cheaper" title="{{ ob.rate_name }}">{{ ob.label }}: ↓ {{ "%.1f"|format(ob.pct) }}% · saves {{ h.currency }} ${{ "%.0f"|format(ob.total) }} trip</span>
+          {% elif ob.diff <= 0 %}
+            <span class="badge alt-higher" title="{{ ob.rate_name }}">{{ ob.label }}: ↑ {{ "%.1f"|format(-ob.pct) }}% pricier</span>
+          {% endif %}
+        {% endfor %}
+      {% endif %}
       </div>
       <span class="collapse-icon">▼</span>
       </div>
     </div>
     <div class="hotel-collapsible">
+    {% if h.stay_type == 'award' %}
+    <div class="booked-bar">Your booked rate: <span>{{ "{:,}".format(h.original|int) }} pts / night</span>
+      &nbsp;·&nbsp; {{ h.num_nights }} night{% if h.num_nights!=1 %}s{% endif %}
+      &nbsp;·&nbsp; Total: <span>{{ "{:,}".format((h.original * h.num_nights)|int) }} pts</span>
+      &nbsp;·&nbsp; Free cancellation
+    </div>
+    {% else %}
     <div class="booked-bar">Your booked rate: <span>{{ h.currency }} ${{ "%.2f"|format(h.original) }} / night</span>
       &nbsp;·&nbsp; {{ h.num_nights }} night{% if h.num_nights!=1 %}s{% endif %}
       &nbsp;·&nbsp; Total: <span>{{ h.currency }} ${{ "%.2f"|format(h.original * h.num_nights) }}</span>
       &nbsp;·&nbsp; Comparing: <span>{{ h.cancel_label }}</span>
     </div>
+    {% endif %}
 
     {% if h.rate_rows %}
+    {% if h.stay_type != 'award' %}
     <div class="filter-bar" id="filters-{{ loop.index }}">
       <label>Filter:</label>
       <button class="filter-btn active" data-hotel="{{ loop.index }}" data-filter="all" onclick="setFilter(this)">All</button>
@@ -395,33 +466,37 @@ DASHBOARD = """<!DOCTYPE html><html lang="en"><head>
       <button class="filter-btn" data-hotel="{{ loop.index }}" data-filter="nonrefundable" onclick="setFilter(this)">🔒 Non-refundable</button>
       <button class="filter-btn" data-hotel="{{ loop.index }}" data-filter="member" onclick="setFilter(this)">⭐ Member Only</button>
     </div>
+    {% endif %}
     <div class="hotel-body">
       <table class="rates-table" id="table-{{ loop.index }}">
         <thead><tr>
           <th class="sortable" data-hotel="{{ loop.index }}" data-col="rate_name" onclick="sortTable(this)">Rate</th>
           <th class="sortable" data-hotel="{{ loop.index }}" data-col="room_type_name" onclick="sortTable(this)">Room Type</th>
-          <th class="sortable sort-asc" data-hotel="{{ loop.index }}" data-col="price_per_night" onclick="sortTable(this)">Price/night</th>
+          <th class="sortable sort-asc" data-hotel="{{ loop.index }}" data-col="price_per_night" onclick="sortTable(this)">{% if h.stay_type == 'award' %}Points/night{% else %}Price/night{% endif %}</th>
           <th class="sortable" data-hotel="{{ loop.index }}" data-col="pct" onclick="sortTable(this)">vs Yours</th>
-          <th class="sortable" data-hotel="{{ loop.index }}" data-col="diff" onclick="sortTable(this)">Save/night</th>
-          <th class="sortable" data-hotel="{{ loop.index }}" data-col="total_savings" onclick="sortTable(this)">Trip Savings</th>
-          <th>Cancellation</th>
+          <th class="sortable" data-hotel="{{ loop.index }}" data-col="diff" onclick="sortTable(this)">{% if h.stay_type == 'award' %}Save/night (pts){% else %}Save/night{% endif %}</th>
+          <th class="sortable" data-hotel="{{ loop.index }}" data-col="total_savings" onclick="sortTable(this)">{% if h.stay_type == 'award' %}Trip Savings (pts){% else %}Trip Savings{% endif %}</th>
+          {% if h.stay_type != 'award' %}<th>Cancellation</th>{% endif %}
+          {% if h.stay_type != 'award' and h.has_points_data %}<th>Points</th>{% endif %}
         </tr></thead>
         <tbody id="tbody-{{ loop.index }}">
         {% for r in h.rate_rows %}
         <tr data-rate="{{ r.rate_name | e }}"
             data-room="{{ r.room_type_name | e }}"
-            data-price="{{ r.price_per_night }}"
+            data-price="{{ r.points_per_night if h.stay_type == 'award' else r.price_per_night }}"
             data-pct="{{ r.pct }}"
             data-diff="{{ r.diff }}"
             data-total="{{ r.diff * h.num_nights }}"
             data-member="{{ 'true' if r.is_members_only else 'false' }}"
             data-deposit="{{ 'true' if r.deposit_required else 'false' }}"
             data-refundable="{{ 'true' if r.is_refundable else ('false' if r.is_refundable == false else 'unknown') }}"
-            {% if h.best_name == r.rate_name and h.best_price == r.price_per_night %}class="best-row"{% endif %}>
+            {% if h.stay_type == 'award' %}{% if h.best_name == r.rate_name and h.best_pts == r.points_per_night %}class="best-row"{% endif %}
+            {% else %}{% if h.best_name == r.rate_name and h.best_price == r.price_per_night %}class="best-row"{% endif %}{% endif %}>
           <td>
             <div class="rate-name">{{ r.rate_name }}
               {% if r.is_members_only %}<span class="tag member">Member</span>{% endif %}
               {% if r.deposit_required %}<span class="tag deposit">Deposit</span>{% endif %}
+              {% if h.stay_type == 'award' %}<span class="tag points">Points</span>{% endif %}
             </div>
             {% if r.rate_plan_code %}<div class="rate-sub">{{ r.rate_plan_code }}{% if r.market_code %} · {{ r.market_code }}{% endif %}</div>{% endif %}
           </td>
@@ -429,10 +504,22 @@ DASHBOARD = """<!DOCTYPE html><html lang="en"><head>
             <div>{{ r.room_type_name }}</div>
             {% if r.room_desc %}<div class="rate-sub">{{ r.room_desc }}</div>{% endif %}
           </td>
+          {% if h.stay_type == 'award' %}
+          <td style="font-weight:600">{{ "{:,}".format(r.points_per_night|int) }} pts</td>
+          {% else %}
           <td style="font-weight:600">{{ r.currency or h.currency }} ${{ "%.2f"|format(r.price_per_night) }}</td>
+          {% endif %}
           <td class="{% if r.diff>0 %}saving{% elif r.diff<0 %}losing{% else %}neutral{% endif %}">
             {% if r.diff>0 %}↓ {{ "%.1f"|format(r.pct) }}%{% elif r.diff<0 %}↑ {{ "%.1f"|format(-r.pct) }}%{% else %}—{% endif %}
           </td>
+          {% if h.stay_type == 'award' %}
+          <td class="{% if r.diff>0 %}saving{% elif r.diff<0 %}losing{% else %}neutral{% endif %}">
+            {% if r.diff>0 %}{{ "{:,}".format(r.diff|int) }} pts{% elif r.diff<0 %}-{{ "{:,}".format((-r.diff)|int) }} pts{% else %}—{% endif %}
+          </td>
+          <td class="{% if r.diff>0 %}saving{% elif r.diff<0 %}losing{% else %}neutral{% endif %}">
+            {% if r.diff>0 %}{{ "{:,}".format((r.diff * h.num_nights)|int) }} pts{% elif r.diff<0 %}-{{ "{:,}".format((-r.diff * h.num_nights)|int) }} pts{% else %}—{% endif %}
+          </td>
+          {% else %}
           <td class="{% if r.diff>0 %}saving{% elif r.diff<0 %}losing{% else %}neutral{% endif %}">
             {% if r.diff>0 %}{{ h.currency }} ${{ "%.2f"|format(r.diff) }}{% elif r.diff<0 %}-{{ h.currency }} ${{ "%.2f"|format(-r.diff) }}{% else %}—{% endif %}
           </td>
@@ -452,18 +539,33 @@ DASHBOARD = """<!DOCTYPE html><html lang="en"><head>
               <span style="color:var(--muted);font-size:0.8rem;">—</span>
             {% endif %}
           </td>
+          {% if h.has_points_data %}
+          <td style="color:var(--muted);font-size:0.82rem;">
+            {% if r.points_per_night %}{{ "{:,}".format(r.points_per_night|int) }} pts{% else %}—{% endif %}
+          </td>
+          {% endif %}
+          {% endif %}
         </tr>
         {% endfor %}
         </tbody>
       </table>
       <div class="no-match" id="nomatch-{{ loop.index }}">No rates match this filter.</div>
       {% if has_cheaper %}
+      {% if h.stay_type == 'award' %}
+      <div class="best-deal">
+        ✅ <strong>Best available: {{ h.best_name }}</strong> at {{ "{:,}".format(h.best_pts|int) }} pts/night —
+        save <strong>{{ "{:,}".format(h.best_diff|int) }} pts/night</strong> =
+        <strong>{{ "{:,}".format(h.best_total|int) }} pts total</strong> over {{ h.num_nights }} night{% if h.num_nights!=1 %}s{% endif %}.
+        &nbsp;<a href="https://www.marriott.com/reservation/rateListMenu.mi?propertyCode={{ h.property_code }}&fromDate={{ h.check_in }}&toDate={{ h.check_out }}" target="_blank" style="color:var(--accent)">Re-book →</a>
+      </div>
+      {% else %}
       <div class="best-deal">
         ✅ <strong>Best available: {{ h.best_name }}</strong> at {{ h.currency }} ${{ "%.2f"|format(h.best_price) }}/night —
         save <strong>{{ h.currency }} ${{ "%.2f"|format(h.best_diff) }}/night</strong> =
         <strong>{{ h.currency }} ${{ "%.2f"|format(h.best_total) }} total</strong> over {{ h.num_nights }} night{% if h.num_nights!=1 %}s{% endif %}.
         &nbsp;<a href="https://www.marriott.com/reservation/rateListMenu.mi?propertyCode={{ h.property_code }}&fromDate={{ h.check_in }}&toDate={{ h.check_out }}" target="_blank" style="color:var(--accent)">Re-book →</a>
       </div>
+      {% endif %}
       {% endif %}
     </div>
     {% else %}
@@ -716,7 +818,10 @@ function isPast(dateStr){
   return new Date(dateStr) < today;
 }
 function renderHotels(){
-  document.getElementById('hotelList').innerHTML=hotels.map((h,i)=>`
+  document.getElementById('hotelList').innerHTML=hotels.map((h,i)=>{
+    const stayType = h.stay_type || 'cash';
+    const sel = 'background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:0.875rem;width:100%;outline:none;cursor:pointer;';
+    return `
   <div class="hotel-entry" id="hotel-${i}">
     <div class="hotel-entry-header">
       <span class="hotel-entry-title">Reservation ${i+1}</span>
@@ -735,29 +840,52 @@ function renderHotels(){
       <div><label>Adults</label><input type="number" min="1" max="10" value="${h.adults||1}" onchange="hotels[${i}].adults=parseInt(this.value)||1"></div>
       <div><label>Rooms</label><input type="number" min="1" max="10" value="${h.num_rooms||1}" onchange="hotels[${i}].num_rooms=parseInt(this.value)||1"></div>
     </div>
-    <div class="form-row c2">
-      <div><label>Your Booked Rate / night</label><input type="number" min="0" step="0.01" value="${h.original_rate_per_night||''}" onchange="hotels[${i}].original_rate_per_night=parseFloat(this.value)||0" placeholder="e.g. 229.00"></div>
-      <div><label>Currency</label>
-        <select onchange="hotels[${i}].currency=this.value" style="background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:0.875rem;width:100%;outline:none;cursor:pointer;">
-          ${['CAD','USD','EUR','GBP','AUD','JPY','CHF','MXN','BRL','SGD','HKD','NZD','SEK','NOK','DKK','INR','CNY','KRW','AED','THB'].map(c=>
-            `<option value="${c}" ${(h.currency||'CAD')===c?'selected':''} >${c}</option>`
-          ).join('')}
+    <div class="form-row">
+      <div><label>Stay Type</label>
+        <select onchange="setStayType(${i}, this.value)" style="${sel}">
+          <option value="cash"  ${stayType==='cash'  ?'selected':''}>Cash / Paid Rate</option>
+          <option value="award" ${stayType==='award' ?'selected':''}>Award Stay (Points)</option>
         </select>
       </div>
     </div>
-
-    <div class="form-row">
-      <div><label>My Booked Rate Cancellation Type <span style="color:var(--muted);font-weight:400;">(used to compare like-for-like rates)</span></label>
-        <select onchange="hotels[${i}].cancellation_type=this.value" style="background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:0.875rem;width:100%;outline:none;cursor:pointer;">
-          <option value="any"           ${(h.cancellation_type||'any')==='any'           ?'selected':''}>Any — compare against all available rates</option>
-          <option value="refundable"    ${(h.cancellation_type||'any')==='refundable'    ?'selected':''}>Refundable / Free Cancellation — only compare flexible rates</option>
-          <option value="nonrefundable" ${(h.cancellation_type||'any')==='nonrefundable' ?'selected':''}>Non-refundable / Prepay — only compare prepay rates</option>
-        </select>
+    <div id="cash-fields-${i}" style="display:${stayType==='award'?'none':'block'}">
+      <div class="form-row c2">
+        <div><label>Your Booked Rate / night</label><input type="number" min="0" step="0.01" value="${h.original_rate_per_night||''}" onchange="hotels[${i}].original_rate_per_night=parseFloat(this.value)||0" placeholder="e.g. 229.00"></div>
+        <div><label>Currency</label>
+          <select onchange="hotels[${i}].currency=this.value" style="${sel}">
+            ${['CAD','USD','EUR','GBP','AUD','JPY','CHF','MXN','BRL','SGD','HKD','NZD','SEK','NOK','DKK','INR','CNY','KRW','AED','THB'].map(c=>
+              `<option value="${c}" ${(h.currency||'CAD')===c?'selected':''} >${c}</option>`
+            ).join('')}
+          </select>
+        </div>
       </div>
-    </div>  </div>`).join('');
+      <div class="form-row">
+        <div><label>My Booked Rate Cancellation Type <span style="color:var(--muted);font-weight:400;">(used to compare like-for-like rates)</span></label>
+          <select onchange="hotels[${i}].cancellation_type=this.value" style="${sel}">
+            <option value="any"           ${(h.cancellation_type||'any')==='any'           ?'selected':''}>Any — compare against all available rates</option>
+            <option value="refundable"    ${(h.cancellation_type||'any')==='refundable'    ?'selected':''}>Refundable / Free Cancellation — only compare flexible rates</option>
+            <option value="nonrefundable" ${(h.cancellation_type||'any')==='nonrefundable' ?'selected':''}>Non-refundable / Prepay — only compare prepay rates</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div id="award-fields-${i}" style="display:${stayType==='award'?'block':'none'}">
+      <div class="form-row">
+        <div><label>Your Booked Points / night</label>
+          <input type="number" min="0" step="1000" value="${h.original_points_per_night||''}" onchange="hotels[${i}].original_points_per_night=parseInt(this.value)||null" placeholder="e.g. 50000">
+        </div>
+      </div>
+    </div>
+  </div>`;
+  }).join('');
+}
+function setStayType(i, val){
+  hotels[i].stay_type = val;
+  document.getElementById('cash-fields-'+i).style.display  = val==='award' ? 'none'  : 'block';
+  document.getElementById('award-fields-'+i).style.display = val==='award' ? 'block' : 'none';
 }
 function addHotel(){
-  hotels.push({name:'',property_code:'',check_in:'',check_out:'',adults:2,num_rooms:1,original_rate_per_night:0,currency:'CAD',cancellation_type:'any'});
+  hotels.push({name:'',property_code:'',check_in:'',check_out:'',adults:2,num_rooms:1,original_rate_per_night:0,currency:'CAD',cancellation_type:'any',stay_type:'cash',original_points_per_night:null});
   renderHotels();
   document.getElementById('hotel-'+(hotels.length-1)).scrollIntoView({behavior:'smooth',block:'center'});
 }

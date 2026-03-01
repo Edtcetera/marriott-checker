@@ -41,20 +41,33 @@ def send_cheaper_rate_alert(cfg: dict, hotel_result: dict) -> None:
     if not ha_url or not token:
         return
 
-    h          = hotel_result
-    currency   = h["currency"]
-    savings_pn = h["best_diff"]
-    savings_t  = h["best_total"]
-    pct        = h["best_pct"]
-    nights     = h["num_nights"]
+    h      = hotel_result
+    pct    = h["best_pct"]
+    nights = h["num_nights"]
 
-    title   = f"🏨 Cheaper rate found — {h['name']}"
-    message = (
-        f"{h['best_name']}\n"
-        f"{currency} ${h['best_price']:.2f}/night  (↓ {pct:.1f}% vs your {currency} ${h['original']:.2f})\n"
-        f"Saves {currency} ${savings_pn:.2f}/night · {currency} ${savings_t:.2f} over {nights} night{'s' if nights != 1 else ''}\n"
-        f"Check-in {h['check_in']}  →  {h['check_out']}"
-    )
+    if h.get("stay_type") == "award":
+        original_pts = int(h["original"])
+        best_pts     = int(h["best_pts"] or 0)
+        savings_pn   = int(h["best_diff"])
+        savings_t    = int(h["best_total"])
+        title   = f"🏨 Cheaper award rate found — {h['name']}"
+        message = (
+            f"{h['best_name']}\n"
+            f"{best_pts:,} pts/night  (↓ {pct:.1f}% vs your {original_pts:,} pts)\n"
+            f"Saves {savings_pn:,} pts/night · {savings_t:,} pts over {nights} night{'s' if nights != 1 else ''}\n"
+            f"Check-in {h['check_in']}  →  {h['check_out']}"
+        )
+    else:
+        currency   = h["currency"]
+        savings_pn = h["best_diff"]
+        savings_t  = h["best_total"]
+        title   = f"🏨 Cheaper rate found — {h['name']}"
+        message = (
+            f"{h['best_name']}\n"
+            f"{currency} ${h['best_price']:.2f}/night  (↓ {pct:.1f}% vs your {currency} ${h['original']:.2f})\n"
+            f"Saves {currency} ${savings_pn:.2f}/night · {currency} ${savings_t:.2f} over {nights} night{'s' if nights != 1 else ''}\n"
+            f"Check-in {h['check_in']}  →  {h['check_out']}"
+        )
     _ha_notify(ha_url, token, service, title, message)
 
 
@@ -71,11 +84,17 @@ def send_summary(cfg: dict, results: list, last_run: str) -> None:
     drops = []
     for h in results:
         if h.get("best_diff") is not None and h["best_diff"] > 0:
-            currency = h["currency"]
-            drops.append(
-                f"• {h['name']}: ↓{h['best_pct']:.1f}%"
-                f" ({currency} ${h['best_total']:.2f} savings)"
-            )
+            if h.get("stay_type") == "award":
+                drops.append(
+                    f"• {h['name']}: ↓{h['best_pct']:.1f}%"
+                    f" (saves {int(h['best_total']):,} pts)"
+                )
+            else:
+                currency = h["currency"]
+                drops.append(
+                    f"• {h['name']}: ↓{h['best_pct']:.1f}%"
+                    f" ({currency} ${h['best_total']:.2f} savings)"
+                )
 
     if drops:
         title   = f"🏨 Cheaper rates found ({len(drops)})"

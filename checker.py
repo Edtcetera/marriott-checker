@@ -250,19 +250,31 @@ def fetch_all_prices(config: dict) -> list[dict]:
                     node  = edge.get("node", {})
                     if node.get("__typename") != "HotelRoom":
                         continue
-                    basic = node.get("basicInformation", {})
-                    rates = node.get("rates", {})
-                    modes = rates.get("rateModes", {})
-                    avg   = modes.get("averageNightlyRatePerUnit", {})
-                    price = parse_price(avg.get("amount"))
-                    if price is None:
+                    basic     = node.get("basicInformation", {})
+                    rates     = node.get("rates", {})
+                    modes     = rates.get("rateModes", {})
+                    mode_type = modes.get("__typename", "")
+
+                    if mode_type == "HotelRoomRateModesPoints":
+                        pts_unit         = modes.get("pointsPerUnit", {})
+                        points_per_night = pts_unit.get("points")  # int, already in pts units
+                        price            = None
+                        currency         = ""
+                    elif mode_type == "HotelRoomRateModesCash":
+                        avg              = modes.get("averageNightlyRatePerUnit", {})
+                        price            = parse_price(avg.get("amount"))
+                        currency         = avg.get("amount", {}).get("currency", "")
+                        points_per_night = None
+                    else:
+                        continue  # unknown mode type, skip
+
+                    if price is None and points_per_night is None:
                         continue
 
                     rate_plans = basic.get("ratePlan", [{}])
                     plan_code  = rate_plans[0].get("ratePlanCode", "") if rate_plans else ""
                     market     = rate_plans[0].get("marketCode", "")  if rate_plans else ""
 
-                    amount_obj  = avg.get("amount", {})
                     rate_name   = rates.get("name", "")
                     deposit_req = basic.get("depositRequired", False)
                     free_cancel = basic.get("freeCancellationUntil")
@@ -271,8 +283,11 @@ def fetch_all_prices(config: dict) -> list[dict]:
                     # freeCancellationUntil (common on availability searches vs. modify flows).
                     # Rates containing "flexible" are refundable; "prepay"/"advance"/"non-ref"
                     # indicate non-refundable. depositRequired=True also means non-refundable.
+                    # Award (points) rooms are always refundable.
                     rate_lower = rate_name.lower()
-                    if free_cancel:
+                    if mode_type == "HotelRoomRateModesPoints":
+                        is_refundable = True
+                    elif free_cancel:
                         is_refundable = True
                     elif deposit_req:
                         is_refundable = False
@@ -284,23 +299,28 @@ def fetch_all_prices(config: dict) -> list[dict]:
                         is_refundable = None  # unknown — don't assert either way
 
                     rooms.append({
-                        "room_type_code":   basic.get("type", "").upper(),
-                        "room_type_name":   basic.get("name", "Room"),
-                        "room_desc":        basic.get("description", ""),
-                        "rate_name":        rate_name,
-                        "rate_plan_code":   plan_code,
-                        "market_code":      market,
-                        "price_per_night":  price,
-                        "currency":         amount_obj.get("currency", ""),
-                        "is_members_only":  basic.get("isMembersOnly", False),
-                        "deposit_required": deposit_req,
+                        "room_type_code":    basic.get("type", "").upper(),
+                        "room_type_name":    basic.get("name", "Room"),
+                        "room_desc":         basic.get("description", ""),
+                        "rate_name":         rate_name,
+                        "rate_plan_code":    plan_code,
+                        "market_code":       market,
+                        "price_per_night":   price,
+                        "points_per_night":  points_per_night,
+                        "currency":          currency,
+                        "is_members_only":   basic.get("isMembersOnly", False),
+                        "deposit_required":  deposit_req,
                         "free_cancellation": free_cancel,
-                        "is_refundable":    is_refundable,
+                        "is_refundable":     is_refundable,
                     })
 
                 log.info(f"[{hotel_name}] {len(rooms)} priced rooms found")
-                for r in sorted(rooms, key=lambda x: x["price_per_night"])[:5]:
-                    log.info(f"  CAD ${r['price_per_night']:.2f} — {r['rate_name']} ({r['room_type_name']})")
+                cash_rooms   = [r for r in rooms if r["price_per_night"]   is not None]
+                points_rooms = [r for r in rooms if r["points_per_night"]  is not None]
+                for r in sorted(cash_rooms, key=lambda x: x["price_per_night"])[:5]:
+                    log.info(f"  {r['currency']} ${r['price_per_night']:.2f} — {r['rate_name']} ({r['room_type_name']})")
+                for r in sorted(points_rooms, key=lambda x: x["points_per_night"])[:3]:
+                    log.info(f"  {r['points_per_night']:,} pts — {r['rate_name']} ({r['room_type_name']})")
             else:
                 log.error(f"[{hotel_name}] HTTP {status}: {text[:400]}")
 
@@ -313,18 +333,29 @@ def fetch_all_prices(config: dict) -> list[dict]:
 
 
 def find_best_match(rooms: list[dict], config: dict) -> dict | None:
-    """Return the cheapest room matching the configured cancellation type filter."""
+    """Return the cheapest room matching the stay type and cancellation filter."""
     if not rooms:
         return None
 
+    stay_type = config.get("stay_type", "cash")
+
+    if stay_type == "award":
+        # Award stays are always refundable — just pick cheapest by points
+        candidates = [r for r in rooms if r.get("points_per_night") is not None]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda r: r["points_per_night"])
+
+    # Cash path — filter by cancellation type then pick cheapest
     cancel_type = config.get("cancellation_type", "any")  # "any" | "refundable" | "nonrefundable"
+    eligible    = [r for r in rooms if r.get("price_per_night") is not None]
 
     if cancel_type == "refundable":
-        candidates = [r for r in rooms if r.get("is_refundable") is True]
+        candidates = [r for r in eligible if r.get("is_refundable") is True]
     elif cancel_type == "nonrefundable":
-        candidates = [r for r in rooms if r.get("is_refundable") is False]
+        candidates = [r for r in eligible if r.get("is_refundable") is False]
     else:
-        candidates = rooms
+        candidates = eligible
 
     if not candidates:
         return None
