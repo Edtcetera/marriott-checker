@@ -246,7 +246,7 @@ DASHBOARD = """<!DOCTYPE html><html lang="en"><head>
 .badge.same{background:rgba(122,125,138,0.15);color:var(--muted);}
 .badge.alt-cheaper{background:rgba(52,152,219,0.15);color:#5dade2;font-weight:600;}
 .badge.alt-higher{background:rgba(122,125,138,0.1);color:var(--muted);}
-.hotel-body{padding:0;}
+.hotel-body{padding:0;overflow-x:auto;-webkit-overflow-scrolling:touch;}
 .booked-bar{padding:14px 20px;background:rgba(200,169,110,0.06);border-bottom:1px solid var(--border);font-size:0.83rem;color:var(--muted);}
 .booked-bar span{color:var(--text);font-weight:600;}
 .filter-bar{padding:10px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:rgba(255,255,255,0.02);}
@@ -284,13 +284,38 @@ DASHBOARD = """<!DOCTYPE html><html lang="en"><head>
 .collapse-icon{font-size:0.75rem;color:var(--muted);transition:transform 0.2s;flex-shrink:0;}
 .collapsed .collapse-icon{transform:rotate(-90deg);}
 .collapsed .hotel-collapsible{display:none;}
+@media(max-width:640px){
+  header{padding:10px 14px;flex-wrap:wrap;gap:6px;}
+  .header-right{flex-wrap:wrap;gap:8px;width:100%;}
+  .header-time{display:none;}
+  .nav-links{gap:6px;margin-left:auto;}
+  .btn{padding:7px 10px;font-size:0.78rem;}
+  .container{padding:14px 12px;}
+  .status-bar{font-size:0.8rem;}
+  .rates-table{min-width:560px;}
+  .filter-bar{overflow-x:auto;-webkit-overflow-scrolling:touch;flex-wrap:nowrap;}
+  .filter-bar label{display:none;}
+  .filter-btn{white-space:nowrap;flex-shrink:0;}
+  .booked-bar{font-size:0.77rem;line-height:1.8;}
+  .hotel-header-right{flex-shrink:1!important;min-width:0;max-width:100%;flex-wrap:wrap;justify-content:flex-end;}
+  .badge{font-size:0.65rem;padding:2px 6px;}
+  .card-body{padding:14px;}
+  .card-header{padding:12px 16px;}
+  .hotel-entry{padding:14px;}
+  .form-row.c4{grid-template-columns:1fr 1fr;}
+  .form-row.c4>*{min-width:0;}
+  .form-row.c2{grid-template-columns:1fr;}
+  .form-row.c2>*{min-width:0;}
+  .form-row.c2.no-collapse{grid-template-columns:1fr 1fr;}
+  .best-deal{font-size:0.8rem;padding:12px 16px;}
+}
 </style></head><body>
 <header>
   <h1>🏨 Marriott Price Checker</h1>
-  <div style="display:flex;align-items:center;gap:16px;">
-    {% if state.last_run %}<span style="font-size:0.78rem;color:var(--muted)">Last: {{ state.last_run }}</span>{% endif %}
+  <div class="header-right" style="display:flex;align-items:center;gap:16px;">
+    {% if state.last_run %}<span class="header-time" style="font-size:0.78rem;color:var(--muted)">Last: {{ state.last_run }}</span>{% endif %}
     {% if state.last_run_epoch and state.status != 'checking' %}
-    <span style="font-size:0.78rem;color:var(--muted)">Next: <span id="countdown"
+    <span class="header-time" style="font-size:0.78rem;color:var(--muted)">Next: <span id="countdown"
       data-last-run="{{ state.last_run_epoch }}"
       data-interval-hours="{{ state.schedule_hours or 3 }}"
       style="color:var(--accent);font-variant-numeric:tabular-nums;">—</span></span>
@@ -339,7 +364,7 @@ DASHBOARD = """<!DOCTYPE html><html lang="en"><head>
         <div class="hotel-title">{{ h.name }}</div>
         <div class="hotel-meta">{{ h.property_code }} &nbsp;·&nbsp; {{ h.check_in }} → {{ h.check_out }} ({{ h.num_nights }} night{% if h.num_nights!=1 %}s{% endif %}) &nbsp;·&nbsp; {{ h.adults }} adult{% if h.adults!=1 %}s{% endif %}</div>
       </div>
-      <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+      <div class="hotel-header-right" style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:flex-end;">
       {% if h.best_price is none %}<span class="badge same">No Data</span>
       {% elif has_cheaper %}<span class="badge higher">↓ {{ "%.1f"|format(h.best_pct) }}% cheaper {{ h.cancel_label | lower }} — rebook</span>
@@ -581,8 +606,10 @@ SETTINGS = """<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Settings — Marriott Price Checker</title><style>""" + CSS + """
 .form-row{display:grid;gap:12px;margin-bottom:12px;}
-.form-row.c2{grid-template-columns:1fr 1fr;}
-.form-row.c4{grid-template-columns:1fr 1fr 1fr 1fr;}
+@media(min-width:641px){
+  .form-row.c2{grid-template-columns:1fr 1fr;}
+  .form-row.c4{grid-template-columns:1fr 1fr 1fr 1fr;}
+}
 .hotel-entry{background:var(--input-bg);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:14px;}
 .hotel-entry-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
 .hotel-entry-title{font-size:0.875rem;font-weight:600;color:var(--accent);}
@@ -592,6 +619,14 @@ SETTINGS = """<!DOCTYPE html><html lang="en"><head>
 .add-btn:hover{border-color:var(--accent);color:var(--accent);}
 .cookie-hint{background:rgba(200,169,110,0.07);border:1px solid rgba(200,169,110,0.2);border-radius:8px;padding:12px 14px;font-size:0.8rem;color:var(--muted);margin-top:10px;line-height:1.6;}
 .cookie-hint strong{color:var(--accent);}
+@media(max-width:640px){
+  .card{background:transparent;border:none;border-radius:0;margin-bottom:0;}
+  .card-header{padding:8px 0 14px;border-bottom:1px solid var(--border);}
+  .card-body{padding:16px 0 0;}
+  .hotel-entry{background:transparent;border:none;border-radius:0;padding:16px 0;border-bottom:1px solid var(--border);margin-bottom:0;overflow:visible;}
+  .hotel-entry:last-of-type{border-bottom:none;}
+  .add-btn{border-radius:8px;margin-top:4px;}
+}
 </style></head><body>
 <header>
   <h1>🏨 Marriott Price Checker</h1>
@@ -642,7 +677,7 @@ SETTINGS = """<!DOCTYPE html><html lang="en"><head>
       <p style="font-size:0.83rem;color:var(--muted);margin-bottom:18px;">
         Receive push notifications on your phone via Home Assistant when a cheaper rate is found, and a summary after every check.
       </p>
-      <div class="form-row c2" style="margin-bottom:12px;">
+      <div class="form-row c2 no-collapse" style="margin-bottom:12px;">
         <div>
           <label>Home Assistant URL</label>
           <input type="text" id="haUrl" value="{{ config.ha_url or '' }}" placeholder="e.g. http://homeassistant.local:8123">
