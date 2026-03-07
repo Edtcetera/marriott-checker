@@ -2,12 +2,40 @@
 """Marriott Price Checker — Web Dashboard"""
 
 import json
+import logging
 import threading
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from flask import Flask, render_template_string, jsonify, request
 from checker import load_config, save_config, get_hotels, get_browser_cookies, fetch_all_prices, find_best_match
 from notify  import send_cheaper_rate_alert, send_summary
+
+# ---------------------------------------------------------------------------
+# In-memory log handler — buffers recent lines with sequence numbers for polling
+# ---------------------------------------------------------------------------
+class _LogHandler(logging.Handler):
+    def __init__(self, maxlen=500):
+        super().__init__()
+        self._buffer = deque(maxlen=maxlen)
+        self._seq = 0
+        self._lock = threading.Lock()
+
+    def emit(self, record):
+        line = self.format(record)
+        with self._lock:
+            self._seq += 1
+            self._buffer.append((self._seq, line))
+
+    def lines_after(self, after_seq=0):
+        with self._lock:
+            return [(s, l) for s, l in self._buffer if s > after_seq]
+
+log_handler = _LogHandler()
+log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+logging.root.addHandler(log_handler)
+logging.root.setLevel(logging.INFO)
+log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -199,6 +227,13 @@ def check():
 def status():
     with state_lock:
         return jsonify(dict(state))
+
+
+@app.route("/api/logs")
+def api_logs():
+    after = int(request.args.get("after", 0))
+    lines = [{"seq": s, "text": l} for s, l in log_handler.lines_after(after)]
+    return jsonify(lines)
 
 
 CSS = """
@@ -619,6 +654,7 @@ SETTINGS = """<!DOCTYPE html><html lang="en"><head>
 .add-btn:hover{border-color:var(--accent);color:var(--accent);}
 .cookie-hint{background:rgba(200,169,110,0.07);border:1px solid rgba(200,169,110,0.2);border-radius:8px;padding:12px 14px;font-size:0.8rem;color:var(--muted);margin-top:10px;line-height:1.6;}
 .cookie-hint strong{color:var(--accent);}
+#logView{background:#0d1117;color:#c9d1d9;font-family:'Consolas','Monaco','Courier New',monospace;font-size:0.78rem;line-height:1.6;margin:0;padding:16px;max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;}
 @media(max-width:640px){
   .card{background:transparent;border:none;border-radius:0;margin-bottom:0;}
   .card-header{padding:8px 0 14px;border-bottom:1px solid var(--border);}
@@ -626,6 +662,7 @@ SETTINGS = """<!DOCTYPE html><html lang="en"><head>
   .hotel-entry{background:transparent;border:none;border-radius:0;padding:16px 0;border-bottom:1px solid var(--border);margin-bottom:0;overflow:visible;}
   .hotel-entry:last-of-type{border-bottom:none;}
   .add-btn{border-radius:8px;margin-top:4px;}
+  #logView{max-height:300px;font-size:0.72rem;border-radius:0;}
 }
 </style></head><body>
 <header>
@@ -703,6 +740,15 @@ SETTINGS = """<!DOCTYPE html><html lang="en"><head>
         2. For the service name, go to <strong>Developer Tools → Services</strong> and search <code>notify</code> — use the part after <code>notify.</code> (e.g. <code>mobile_app_your_phone</code>), or just use <code>notify</code> to send to all devices<br>
         3. Paste the URL, service name, and token above, save, then hit Send Test Notification to confirm it works
       </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <h2>Application Logs</h2>
+      <button class="btn" onclick="clearLogView()" style="font-size:0.78rem;padding:5px 12px;">Clear</button>
+    </div>
+    <div class="card-body" style="padding:0;">
+      <pre id="logView"></pre>
     </div>
   </div>
 </div>
@@ -797,6 +843,22 @@ function testNotify(){
     }).catch(()=>{ btn.disabled=false; res.textContent='❌ Request failed'; res.style.color='var(--red)'; });
 }
 renderHotels();
+// --- Log viewer (polling) ---
+(function(){
+  const el=document.getElementById('logView');
+  let lastSeq=0;
+  function poll(){
+    fetch('/api/logs?after='+lastSeq).then(r=>r.json()).then(lines=>{
+      if(!lines.length) return;
+      const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<60;
+      lines.forEach(l=>{el.textContent+=l.text+'\\n';lastSeq=l.seq;});
+      if(atBottom) el.scrollTop=el.scrollHeight;
+    }).catch(()=>{});
+  }
+  poll();
+  setInterval(poll,2000);
+})();
+function clearLogView(){document.getElementById('logView').textContent='';}
 </script></body></html>
 """
 
@@ -817,5 +879,6 @@ def scheduler():
 
 
 if __name__ == "__main__":
+    log.info("Marriott Price Checker starting on port 8080")
     threading.Thread(target=scheduler, daemon=True).start()
     app.run(host="0.0.0.0", port=8080, debug=False)
